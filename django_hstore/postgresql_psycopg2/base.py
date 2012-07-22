@@ -56,7 +56,7 @@ class DatabaseCreation(DatabaseCreation):
         if cursor.fetchone():
             # skip if already exists
             return
-        if self.connection._version[0:2]>=(9,1):
+        if self.connection.pg_version >= 90100:
             cursor.execute("create extension hstore;")
             self.connection.commit_unless_managed()
             return
