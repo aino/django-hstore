@@ -139,7 +139,8 @@ class DatabaseWrapper(DatabaseWrapper):
         cursor = super(DatabaseWrapper, self)._cursor()
 
         # register hstore extension
-        register_hstore(self.connection, globally=True, unicode=True)
+        #Gives error regarding unicode arg, so remove for now. Investigate later.
+        register_hstore(self.connection, globally=True)
 
         # bypass future registrations
         self._cursor = super(DatabaseWrapper, self)._cursor
