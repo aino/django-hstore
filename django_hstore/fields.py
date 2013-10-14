@@ -9,6 +9,8 @@ import copy
 
 class HStoreDict(dict):
     def __init__(self, value, field=None, loaded=True, connection=None):
+        if value is None:
+            value = {}
         super(HStoreDict, self).__init__(value)
         self.connection = connection
         self.field = field
