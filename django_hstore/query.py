@@ -6,22 +6,39 @@ from django.db.models.sql.datastructures import EmptyResultSet
 from django.db.models.sql.query import Query
 from django.db.models.sql.subqueries import UpdateQuery
 from django.db.models.sql.where import EmptyShortCircuit, WhereNode
+
+from django.contrib.gis.db.models.query import GeoQuerySet
+from django.contrib.gis.db.models.sql.query import GeoQuery
+from django.contrib.gis.db.models.sql.where import GeoWhereNode, GeoConstraint
+
+
+class literal_clause(object):
+    def __init__(self, sql, params):
+        self.clause = (sql, params)
+
+    def as_sql(self, qn, connection):
+        return self.clause
+
+
 try:
-    from django.db.models.sql.where import QueryWrapper # django <= 1.3
+    from django.db.models.sql.where import QueryWrapper  # django <= 1.3
 except ImportError:
-    from django.db.models.query_utils import QueryWrapper # django >= 1.4
+    from django.db.models.query_utils import QueryWrapper  # django >= 1.4
 
 
 def select_query(method):
+
     def selector(self, *args, **params):
         query = self.query.clone()
         query.default_cols = False
         query.clear_select_fields()
         return method(self, query, *args, **params)
+
     return selector
 
 
 def update_query(method):
+
     def updater(self, *args, **params):
         self._for_write = True
         query = method(self, self.query.clone(UpdateQuery), *args, **params)
@@ -45,43 +62,88 @@ def update_query(method):
 
 
 class HStoreWhereNode(WhereNode):
+
     def make_atom(self, child, qn, connection):
         lvalue, lookup_type, value_annot, param = child
         kwargs = {'connection': connection} if VERSION[:2] >= (1, 3) else {}
+        
         if lvalue and lvalue.field and hasattr(lvalue.field, 'db_type') and lvalue.field.db_type(**kwargs) == 'hstore':
             try:
                 lvalue, params = lvalue.process(lookup_type, param, connection)
             except EmptyShortCircuit:
                 raise EmptyResultSet
             field = self.sql_for_columns(lvalue, qn, connection)
+            
             if lookup_type == 'exact':
                 if isinstance(param, dict):
                     return ('%s = %%s' % field, [param])
                 else:
                     raise ValueError('invalid value')
-            elif lookup_type == 'contains':
+            
+            elif lookup_type in ('gt', 'gte', 'lt', 'lte'):
+                if isinstance(param, dict) and len(param) == 1:
+                    sign = (lookup_type[0] == 'g' and '>%s' or '<%s') % (
+                        lookup_type[-1] == 'e' and '=' or '')
+                    return ('%s->\'%s\' %s %%s' % (field, param.keys()[0], sign), param.values())
+                else:
+                    raise ValueError('invalid value')
+            
+            elif lookup_type in ['contains', 'icontains']:
                 if isinstance(param, dict):
-                    return ('%s @> %%s' % field, [param])
+                    values = param.values()
+                    if len(values) == 1 and isinstance(values[0], (list, tuple)):
+                        return ('%s->\'%s\' = ANY(%%s)' % (field, param.keys()[0]), [map(str, values[0])])
+                    else:
+                        return ('%s @> %%s' % field, [param])
                 elif isinstance(param, (list, tuple)):
+                    if len(param) < 2:
+                        return ('%s ? %%s' % field, [param[0]])
                     if param:
                         return ('%s ?& %%s' % field, [param])
                     else:
                         raise ValueError('invalid value')
                 elif isinstance(param, basestring):
-                    return ('%s ? %%s' % field, [param])
+                    # if looking for a string perform the normal text lookup
+                    # that is: look for occurence of string in all the keys
+                    pass
                 else:
                     raise ValueError('invalid value')
             else:
                 raise TypeError('invalid lookup type')
+        
         return super(HStoreWhereNode, self).make_atom(child, qn, connection)
+    
+    make_hstore_atom = make_atom
+
+
+class HStoreGeoWhereNode(HStoreWhereNode, GeoWhereNode):
+    
+    def make_atom(self, child, qn, connection):
+        lvalue, lookup_type, value_annot, params_or_value = child
+        
+        # if spatial query
+        if isinstance(lvalue, GeoConstraint):
+            return GeoWhereNode.make_atom(self, child, qn, connection)
+        
+        # else might be an HSTORE query
+        return HStoreWhereNode.make_atom(self, child, qn, connection)
 
 
 class HStoreQuery(Query):
+
     def __init__(self, model):
         super(HStoreQuery, self).__init__(model, HStoreWhereNode)
 
 
+class HStoreGeoQuery(GeoQuery, Query):
+    
+    def __init__(self, *args, **kwargs):
+        model = kwargs.pop('model', None) or args[0]
+        super(HStoreGeoQuery, self).__init__(model, HStoreGeoWhereNode)
+
+
 class HStoreQuerySet(QuerySet):
+
     def __init__(self, model=None, query=None, using=None):
         query = query or HStoreQuery(model)
         super(HStoreQuerySet, self).__init__(model=model, query=query, using=using)
@@ -137,3 +199,10 @@ class HStoreQuerySet(QuerySet):
         field, model, direct, m2m = self.model._meta.get_field_by_name(attr)
         query.add_update_fields([(field, None, value)])
         return query
+
+
+class HStoreGeoQuerySet(HStoreQuerySet, GeoQuerySet):
+
+    def __init__(self, model=None, query=None, using=None):
+        query = query or HStoreGeoQuery(model)
+        super(HStoreGeoQuerySet, self).__init__(model=model, query=query, using=using)

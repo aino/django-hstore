@@ -4,3 +4,8 @@
 dist
 build
 .idea
+tests/local_settings.py
+.coverage
+*~
+._*
+*.DS_Store
